@@ -10,6 +10,60 @@ index 3f1be60..f1f60fe 100644
  - Reader font sizes now persist as actual point sizes, keeping the closest matching size when font families or installed files change.
  - SD-card fonts now include the built-in reader fallback stack for common symbols, emoji, and selected CJK glyphs while retaining Noto Sans fallback coverage.
  - Downloadable SD-card fonts are now rendered with the same darker anti-aliasing as the built-in reading fonts.
+diff --git a/include/BookDisplayTitle.h b/include/BookDisplayTitle.h
+new file mode 100644
+index 0000000..262d493
+--- /dev/null
++++ b/include/BookDisplayTitle.h
+@@ -0,0 +1,17 @@
++#pragma once
++
++#include <string>
++
++namespace BookDisplayTitle {
++
++// User-facing book titles follow the SD-card filename, without its extension.
++// Metadata remains available to parsers/stores for interoperability and migration.
++inline std::string fromPath(const std::string& path) {
++  const size_t slash = path.find_last_of('/');
++  const size_t start = slash == std::string::npos ? 0 : slash + 1;
++  const size_t dot = path.find_last_of('.');
++  const size_t end = dot == std::string::npos || dot <= start ? path.size() : dot;
++  return path.substr(start, end - start);
++}
++
++}  // namespace BookDisplayTitle
+diff --git a/lib/Txt/Txt.cpp b/lib/Txt/Txt.cpp
+index 5c6d319..66282a0 100644
+--- a/lib/Txt/Txt.cpp
++++ b/lib/Txt/Txt.cpp
+@@ -1,5 +1,6 @@
+ #include "Txt.h"
+ 
++#include <BookDisplayTitle.h>
+ #include <FsHelpers.h>
+ #include <JpegToBmpConverter.h>
+ #include <Logging.h>
+@@ -34,18 +35,7 @@ bool Txt::load() {
+   return true;
+ }
+ 
+-std::string Txt::getTitle() const {
+-  // Extract filename without path and extension
+-  size_t lastSlash = filepath.find_last_of('/');
+-  std::string filename = (lastSlash != std::string::npos) ? filepath.substr(lastSlash + 1) : filepath;
+-
+-  // Remove .txt extension
+-  if (FsHelpers::hasTxtExtension(filename)) {
+-    filename.resize(filename.length() - 4);
+-  }
+-
+-  return filename;
+-}
++std::string Txt::getTitle() const { return BookDisplayTitle::fromPath(filepath); }
+ 
+ void Txt::setupCacheDir() const {
+   if (!Storage.exists(cacheBasePath.c_str())) {
 diff --git a/lib/Xtc/Xtc.cpp b/lib/Xtc/Xtc.cpp
 index 4dbcd27..d91e53f 100644
 --- a/lib/Xtc/Xtc.cpp
