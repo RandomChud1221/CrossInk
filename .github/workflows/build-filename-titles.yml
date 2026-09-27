@@ -30,7 +30,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install PlatformIO
-        run: pip install platformio
+        run: pip install "platformio==6.1.19"
 
       - name: Build X3/X4 firmware
         run: pio run -e default
