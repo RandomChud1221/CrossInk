@@ -1,0 +1,43 @@
+name: Build CrossInk v1.5.0 Filename Titles
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Save custom patch
+        run: cp CrossInk-filename-titles-v1.5.0-git.patch /tmp/filename-titles.patch
+
+      - name: Switch to CrossInk v1.5.0
+        run: |
+          git checkout 0de623e
+          git submodule update --init --recursive
+
+      - name: Apply filename-title patch
+        run: git apply /tmp/filename-titles.patch
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build X3/X4 firmware
+        run: pio run -e default
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrossInk-v1.5.0-filename-titles
+          path: |
+            .pio/build/default/*.bin
