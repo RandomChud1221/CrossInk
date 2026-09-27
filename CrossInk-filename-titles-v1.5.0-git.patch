@@ -1,0 +1,441 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 3f1be60..f1f60fe 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -22,6 +22,7 @@
+ 
+ ### Changed
+ 
++- User-facing book titles now use the book filename without its extension across Home, reader menus/status, reading stats, bookmarks, and clippings.
+ - Reader font sizes now persist as actual point sizes, keeping the closest matching size when font families or installed files change.
+ - SD-card fonts now include the built-in reader fallback stack for common symbols, emoji, and selected CJK glyphs while retaining Noto Sans fallback coverage.
+ - Downloadable SD-card fonts are now rendered with the same darker anti-aliasing as the built-in reading fonts.
+diff --git a/lib/Xtc/Xtc.cpp b/lib/Xtc/Xtc.cpp
+index 4dbcd27..d91e53f 100644
+--- a/lib/Xtc/Xtc.cpp
++++ b/lib/Xtc/Xtc.cpp
+@@ -7,6 +7,8 @@
+ 
+ #include "Xtc.h"
+ 
++#include <BookDisplayTitle.h>
++
+ #include <Bitmap.h>
+ #include <HalStorage.h>
+ #include <Logging.h>
+@@ -81,33 +83,7 @@ void Xtc::setupCacheDir() const {
+   Storage.mkdir(cachePath.c_str());
+ }
+ 
+-std::string Xtc::getTitle() const {
+-  if (!loaded || !parser) {
+-    return "";
+-  }
+-
+-  // Try to get title from XTC metadata first
+-  std::string title = parser->getTitle();
+-  if (!title.empty()) {
+-    return title;
+-  }
+-
+-  // Fallback: extract filename from path as title
+-  size_t lastSlash = filepath.find_last_of('/');
+-  size_t lastDot = filepath.find_last_of('.');
+-
+-  if (lastSlash == std::string::npos) {
+-    lastSlash = 0;
+-  } else {
+-    lastSlash++;
+-  }
+-
+-  if (lastDot == std::string::npos || lastDot <= lastSlash) {
+-    return filepath.substr(lastSlash);
+-  }
+-
+-  return filepath.substr(lastSlash, lastDot - lastSlash);
+-}
++std::string Xtc::getTitle() const { return BookDisplayTitle::fromPath(filepath); }
+ 
+ std::string Xtc::getAuthor() const {
+   if (!loaded || !parser) {
+diff --git a/src/RecentBooksStore.cpp b/src/RecentBooksStore.cpp
+index 06ce0c2..3aeafea 100644
+--- a/src/RecentBooksStore.cpp
++++ b/src/RecentBooksStore.cpp
+@@ -1,6 +1,7 @@
+ #include "RecentBooksStore.h"
+ 
+ #include <Epub.h>
++#include <BookDisplayTitle.h>
+ #include <FsHelpers.h>
+ #include <HalStorage.h>
+ #include <Logging.h>
+@@ -39,7 +40,7 @@ bool RecentBooksStore::fromJson(JsonVariantConst doc) {
+     if (getCount() >= MAX_RECENT_BOOKS) break;
+     RecentBook book;
+     book.path = obj["path"] | "";
+-    book.title = obj["title"] | "";
++    book.title = BookDisplayTitle::fromPath(book.path);
+     book.author = obj["author"] | "";
+     book.coverBmpPath = obj["coverBmpPath"] | "";
+     const int storedCoverState = obj["coverState"] | 0;
+@@ -66,7 +67,7 @@ void RecentBooksStore::addOrUpdateBook(const std::string& path, const std::strin
+   auto it =
+       std::find_if(recentBooks.begin(), recentBooks.end(), [&](const RecentBook& book) { return book.path == path; });
+   if (it != recentBooks.end()) {
+-    it->title = title;
++    it->title = BookDisplayTitle::fromPath(path);
+     it->author = author;
+     it->coverBmpPath = coverBmpPath;
+     it->coverState = coverState;
+@@ -76,7 +77,8 @@ void RecentBooksStore::addOrUpdateBook(const std::string& path, const std::strin
+       recentBooks.insert(recentBooks.begin(), std::move(book));
+     }
+   } else {
+-    recentBooks.insert(recentBooks.begin(), {path, title, author, coverBmpPath, coverState});
++    recentBooks.insert(recentBooks.begin(),
++                       {path, BookDisplayTitle::fromPath(path), author, coverBmpPath, coverState});
+     if (recentBooks.size() > MAX_RECENT_BOOKS) {
+       recentBooks.resize(MAX_RECENT_BOOKS);
+     }
+@@ -92,7 +94,7 @@ bool RecentBooksStore::updateBook(const std::string& path, const std::string& ti
+     return false;
+   }
+   RecentBook& book = *it;
+-  book.title = title;
++  book.title = BookDisplayTitle::fromPath(path);
+   book.author = author;
+   book.coverBmpPath = coverBmpPath;
+   book.coverState = coverState;
+@@ -121,6 +123,7 @@ void RecentBooksStore::updatePath(const std::string& oldPath, const std::string&
+     return;
+   }
+   it->path = newPath;
++  it->title = BookDisplayTitle::fromPath(newPath);
+   if (!oldCachePath.empty() && !it->coverBmpPath.empty() && it->coverBmpPath.rfind(oldCachePath, 0) == 0) {
+     it->coverBmpPath = newCachePath + it->coverBmpPath.substr(oldCachePath.size());
+   }
+@@ -148,15 +151,15 @@ RecentBook RecentBooksStore::getDataFromBook(std::string path) const {
+   if (FsHelpers::hasEpubExtension(lastBookFileName)) {
+     Epub epub(path, "/.crosspoint");
+     epub.load(false, true, Epub::XLocationLoadMode::Skip);
+-    return RecentBook{path, epub.getTitle(), epub.getAuthor(), epub.getThumbBmpPath()};
++    return RecentBook{path, BookDisplayTitle::fromPath(path), epub.getAuthor(), epub.getThumbBmpPath()};
+   } else if (FsHelpers::hasXtcExtension(lastBookFileName)) {
+     // Handle XTC file
+     Xtc xtc(path, "/.crosspoint");
+     if (xtc.load()) {
+-      return RecentBook{path, xtc.getTitle(), xtc.getAuthor(), xtc.getThumbBmpPath()};
++      return RecentBook{path, BookDisplayTitle::fromPath(path), xtc.getAuthor(), xtc.getThumbBmpPath()};
+     }
+   } else if (FsHelpers::hasTxtExtension(lastBookFileName) || FsHelpers::hasMarkdownExtension(lastBookFileName)) {
+-    return RecentBook{path, lastBookFileName, "", ""};
++    return RecentBook{path, BookDisplayTitle::fromPath(path), "", ""};
+   }
+   return RecentBook{path, "", "", ""};
+ }
+@@ -207,7 +210,7 @@ bool RecentBooksStore::loadFromBinaryFile() {
+         std::string title, author;
+         serialization::readString(inputFile, title);
+         serialization::readString(inputFile, author);
+-        recentBooks.push_back({path, title, author, ""});
++        recentBooks.push_back({path, BookDisplayTitle::fromPath(path), author, ""});
+       } else {
+         recentBooks.push_back(book);
+       }
+@@ -227,13 +230,13 @@ bool RecentBooksStore::loadFromBinaryFile() {
+       serialization::readString(inputFile, author);
+       serialization::readString(inputFile, coverBmpPath);
+ 
+-      // Omit books with missing title (e.g. saved before metadata was available)
+-      if (title.empty()) {
++      const std::string displayTitle = BookDisplayTitle::fromPath(path);
++      if (displayTitle.empty()) {
+         omitted++;
+         continue;
+       }
+ 
+-      recentBooks.push_back({path, title, author, coverBmpPath});
++      recentBooks.push_back({path, displayTitle, author, coverBmpPath});
+     }
+ 
+     if (omitted > 0) {
+diff --git a/src/activities/home/BookmarksHomeActivity.cpp b/src/activities/home/BookmarksHomeActivity.cpp
+index 6888815..ce94fe5 100644
+--- a/src/activities/home/BookmarksHomeActivity.cpp
++++ b/src/activities/home/BookmarksHomeActivity.cpp
+@@ -1,5 +1,6 @@
+ #include "BookmarksHomeActivity.h"
+ 
++#include <BookDisplayTitle.h>
+ #include <GfxRenderer.h>
+ #include <I18n.h>
+ 
+@@ -27,7 +28,10 @@ BookmarksHomeActivity::BookmarksHomeActivity(GfxRenderer& renderer, MappedInputM
+ 
+ void BookmarksHomeActivity::reloadBookmarks() {
+   books.clear();
++  displayTitles.clear();
+   BookmarkStore::getAllBookmarkedBooks(books);
++  displayTitles.reserve(books.size());
++  for (const auto& book : books) displayTitles.push_back(BookDisplayTitle::fromPath(book.bookPath));
+   if (books.empty()) {
+     selectedIndex = 0;
+   } else if (selectedIndex >= static_cast<int>(books.size())) {
+@@ -52,6 +56,7 @@ void BookmarksHomeActivity::onEnter() {
+ void BookmarksHomeActivity::onExit() {
+   Activity::onExit();
+   books.clear();
++  displayTitles.clear();
+ }
+ 
+ void BookmarksHomeActivity::loop() {
+@@ -162,7 +167,7 @@ void BookmarksHomeActivity::buildListScreen(UiApp::ScreenType& screen) {
+   items.reserve(books.size());
+   for (size_t i = 0; i < books.size(); ++i) {
+     fui::ListItem item;
+-    item.label = books[i].bookTitle.c_str();
++    item.label = displayTitles[i].c_str();
+     if (!books[i].bookAuthor.empty()) item.subtitle = books[i].bookAuthor.c_str();
+     item.actionValue = static_cast<int16_t>(i);
+     items.push_back(item);
+@@ -213,7 +218,7 @@ void BookmarksHomeActivity::showBookmarkBookActionMenu(int bookIndex, bool ignor
+   items.reserve(1);
+   items.push_back({FileBrowserAction::Delete, StrId::STR_DELETE});
+ 
+-  startActivityForResult(std::make_unique<FileBrowserActionActivity>(renderer, mappedInput, entry.bookTitle,
++  startActivityForResult(std::make_unique<FileBrowserActionActivity>(renderer, mappedInput, displayTitles[bookIndex],
+                                                                      std::move(items), ignoreInitialConfirmRelease),
+                          [this, entry](const ActivityResult& result) {
+                            longPressOpenHandled = false;
+diff --git a/src/activities/home/BookmarksHomeActivity.h b/src/activities/home/BookmarksHomeActivity.h
+index 936ce4c..94f4d60 100644
+--- a/src/activities/home/BookmarksHomeActivity.h
++++ b/src/activities/home/BookmarksHomeActivity.h
+@@ -21,6 +21,7 @@ class BookmarksHomeActivity final : public Activity {
+ 
+  private:
+   std::vector<BookmarkedBookEntry> books;
++  std::vector<std::string> displayTitles;
+   int selectedIndex = 0;
+   bool longPressOpenHandled = false;
+   ButtonNavigator buttonNavigator;
+diff --git a/src/activities/home/HomeActivity.cpp b/src/activities/home/HomeActivity.cpp
+index 4e1432d..26b3ed4 100644
+--- a/src/activities/home/HomeActivity.cpp
++++ b/src/activities/home/HomeActivity.cpp
+@@ -42,7 +42,7 @@ namespace {
+ constexpr uint32_t CAROUSEL_CACHE_MAGIC = 0x43434152;  // "CCAR"
+ // Cached frames include all Home visuals, including the menu icons. Bump this
+ // whenever their rendering changes so stale snapshots are rebuilt after OTA.
+-constexpr uint16_t CAROUSEL_CACHE_VERSION = 5;
++constexpr uint16_t CAROUSEL_CACHE_VERSION = 6;
+ constexpr char CAROUSEL_CACHE_PATH[] = "/.crosspoint/home_carousel_cache.bin";
+ constexpr char CAROUSEL_CACHE_TMP_PATH[] = "/.crosspoint/home_carousel_cache.tmp";
+ constexpr uint32_t CAROUSEL_FRAME_MIN_FREE_AFTER_ALLOC = 64U * 1024U;
+diff --git a/src/activities/home/SavedItemsHomeActivity.cpp b/src/activities/home/SavedItemsHomeActivity.cpp
+index 725a39a..4f957ab 100644
+--- a/src/activities/home/SavedItemsHomeActivity.cpp
++++ b/src/activities/home/SavedItemsHomeActivity.cpp
+@@ -1,5 +1,7 @@
+ #include "SavedItemsHomeActivity.h"
+ 
++#include <BookDisplayTitle.h>
++
+ #include <GfxRenderer.h>
+ #include <I18n.h>
+ #include <Logging.h>
+@@ -64,6 +66,7 @@ SavedItemsHomeActivity::SavedItemsHomeActivity(GfxRenderer& renderer, MappedInpu
+ 
+ void SavedItemsHomeActivity::reloadSavedBooks() {
+   books.clear();
++  displayTitles.clear();
+ 
+   std::vector<BookmarkedBookEntry> bookmarkedBooks;
+   std::vector<ClippedBookEntry> clippedBooks;
+@@ -77,6 +80,8 @@ void SavedItemsHomeActivity::reloadSavedBooks() {
+   for (const auto& entry : clippedBooks) {
+     mergeClippingEntry(books, entry);
+   }
++  displayTitles.reserve(books.size());
++  for (const auto& book : books) displayTitles.push_back(BookDisplayTitle::fromPath(book.bookPath));
+ 
+   if (books.empty()) {
+     selectedIndex = 0;
+@@ -100,6 +105,7 @@ void SavedItemsHomeActivity::onEnter() {
+ 
+ void SavedItemsHomeActivity::onExit() {
+   books.clear();
++  displayTitles.clear();
+   Activity::onExit();
+ }
+ 
+@@ -210,7 +216,7 @@ void SavedItemsHomeActivity::buildListScreen(UiApp::ScreenType& screen) {
+   items.reserve(books.size());
+   for (size_t i = 0; i < books.size(); ++i) {
+     fui::ListItem item;
+-    item.label = books[i].bookTitle.c_str();
++    item.label = displayTitles[i].c_str();
+     if (!books[i].bookAuthor.empty()) item.subtitle = books[i].bookAuthor.c_str();
+     item.actionValue = static_cast<int16_t>(i);
+     items.push_back(item);
+@@ -270,6 +276,7 @@ void SavedItemsHomeActivity::openSavedItems(const int bookIndex) {
+ void SavedItemsHomeActivity::showSavedKindMenu(const int bookIndex) {
+   if (bookIndex < 0 || bookIndex >= static_cast<int>(books.size())) return;
+   const SavedBookEntry entry = books[bookIndex];
++  const std::string displayTitle = displayTitles[bookIndex];
+ 
+   std::vector<FileBrowserActionActivity::MenuItem> items;
+   items.reserve(2);
+@@ -277,7 +284,7 @@ void SavedItemsHomeActivity::showSavedKindMenu(const int bookIndex) {
+   items.push_back({FileBrowserAction::ViewClippings, StrId::STR_CLIPPINGS});
+ 
+   startActivityForResult(
+-      std::make_unique<FileBrowserActionActivity>(renderer, mappedInput, entry.bookTitle, std::move(items)),
++      std::make_unique<FileBrowserActionActivity>(renderer, mappedInput, displayTitle, std::move(items)),
+       [this, entry](const ActivityResult& result) {
+         const auto* actionResult = std::get_if<FileBrowserActionResult>(&result.data);
+         if (result.isCancelled || !actionResult) {
+@@ -302,6 +309,7 @@ void SavedItemsHomeActivity::showSavedKindMenu(const int bookIndex) {
+ void SavedItemsHomeActivity::showSavedBookActionMenu(const int bookIndex, const bool ignoreInitialConfirmRelease) {
+   if (bookIndex < 0 || bookIndex >= static_cast<int>(books.size())) return;
+   const SavedBookEntry entry = books[bookIndex];
++  const std::string displayTitle = displayTitles[bookIndex];
+ 
+   std::vector<FileBrowserActionActivity::MenuItem> items;
+   items.reserve(2);
+@@ -313,9 +321,9 @@ void SavedItemsHomeActivity::showSavedBookActionMenu(const int bookIndex, const
+   }
+ 
+   startActivityForResult(
+-      std::make_unique<FileBrowserActionActivity>(renderer, mappedInput, entry.bookTitle, std::move(items),
++      std::make_unique<FileBrowserActionActivity>(renderer, mappedInput, displayTitle, std::move(items),
+                                                   ignoreInitialConfirmRelease),
+-      [this, entry](const ActivityResult& result) {
++      [this, entry, displayTitle](const ActivityResult& result) {
+         longPressOpenHandled = false;
+         const auto* actionResult = std::get_if<FileBrowserActionResult>(&result.data);
+         if (!result.isCancelled && actionResult) {
+@@ -323,7 +331,7 @@ void SavedItemsHomeActivity::showSavedBookActionMenu(const int bookIndex, const
+             case FileBrowserAction::DeleteBookmarks: {
+               auto confirmation = makeUniqueNoThrow<ConfirmationActivity>(
+                   renderer, mappedInput, BookActions::confirmationHeading(StrId::STR_DELETE_BOOKMARKS),
+-                  entry.bookTitle);
++                  displayTitle);
+               if (!confirmation) {
+                 LOG_ERR("SVA", "OOM: bookmark clear ConfirmationActivity");
+                 reloadSavedBooks();
+diff --git a/src/activities/home/SavedItemsHomeActivity.h b/src/activities/home/SavedItemsHomeActivity.h
+index a317735..c3cb439 100644
+--- a/src/activities/home/SavedItemsHomeActivity.h
++++ b/src/activities/home/SavedItemsHomeActivity.h
+@@ -30,6 +30,7 @@ class SavedItemsHomeActivity final : public Activity {
+ 
+  private:
+   std::vector<SavedBookEntry> books;
++  std::vector<std::string> displayTitles;
+   ButtonNavigator buttonNavigator;
+   int selectedIndex = 0;
+   bool longPressOpenHandled = false;
+diff --git a/src/activities/reader/EpubReaderActivity.cpp b/src/activities/reader/EpubReaderActivity.cpp
+index a0960b0..58d8aac 100644
+--- a/src/activities/reader/EpubReaderActivity.cpp
++++ b/src/activities/reader/EpubReaderActivity.cpp
+@@ -1,6 +1,7 @@
+ #include "EpubReaderActivity.h"
+ 
+ #include <Arduino.h>
++#include <BookDisplayTitle.h>
+ #include <Epub/Page.h>
+ #include <Epub/blocks/TextBlock.h>
+ #include <FontCacheManager.h>
+@@ -1986,6 +1987,7 @@ void EpubReaderActivity::onEnter() {
+     return;
+   }
+ 
++  bookDisplayTitle = BookDisplayTitle::fromPath(epub->getPath());
+   captureGlobalReaderSettings();
+   epub->setupCacheDir();
+   loadBookReaderSettings();
+@@ -2217,7 +2219,7 @@ void EpubReaderActivity::openReaderMenu() {
+   const BookReaderSettingsData bookSettings = loadBookReaderSettingsFile(epub->getCachePath());
+   startActivityForResult(
+       std::make_unique<EpubReaderMenuActivity>(
+-          renderer, mappedInput, epub->getTitle(), currentPage, totalPages, bookProgressPercent, SETTINGS.orientation,
++          renderer, mappedInput, bookDisplayTitle, currentPage, totalPages, bookProgressPercent, SETTINGS.orientation,
+           !previewActive && !currentPageFootnotes.empty(),
+           !previewActive && epub && Dictionary::exists(epub->getCachePath().c_str()), !BOOKMARKS.getBookmarks().empty(),
+           CLIPPINGS.hasClippings(),
+@@ -3257,7 +3259,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction
+       pauseReadingPaceTimer("delete_stats_confirm");
+       startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput,
+                                                                     confirmationHeading(StrId::STR_DELETE_BOOK_STATS),
+-                                                                    epub ? epub->getTitle() : std::string{}),
++                                                                    epub ? bookDisplayTitle : std::string{}),
+                              [this](const ActivityResult& result) {
+                                bool statsDeleted = false;
+                                if (!result.isCancelled) {
+@@ -3286,7 +3288,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction
+       pauseReadingPaceTimer("delete_cache_confirm");
+       startActivityForResult(
+           std::make_unique<ConfirmationActivity>(renderer, mappedInput, confirmationHeading(StrId::STR_DELETE_CACHE),
+-                                                 epub ? epub->getTitle() : std::string{}, false, true),
++                                                 epub ? bookDisplayTitle : std::string{}, false, true),
+           [this](const ActivityResult& result) {
+             if (result.isCancelled) {
+               resumeReadingPaceTimer("delete_cache_cancel");
+@@ -3358,13 +3360,13 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction
+       pauseReadingPaceTimer("book_stats");
+       if (hasSyncedStats) {
+         startActivityForResult(
+-            std::make_unique<BookStatsActivity>(renderer, mappedInput, epub->getTitle(), epub->getCachePath(),
++            std::make_unique<BookStatsActivity>(renderer, mappedInput, bookDisplayTitle, epub->getCachePath(),
+                                                 displayStats, getCurrentBookProgressPercent(), hasEstimatedTimeLeft,
+                                                 estimatedTimeLeftSeconds, globalStats, displayAllDevicesStats),
+             [this](const ActivityResult&) { handleBookStatsReturn(); });
+       } else {
+         startActivityForResult(
+-            std::make_unique<BookStatsActivity>(renderer, mappedInput, epub->getTitle(), epub->getCachePath(),
++            std::make_unique<BookStatsActivity>(renderer, mappedInput, bookDisplayTitle, epub->getCachePath(),
+                                                 displayStats, getCurrentBookProgressPercent(), hasEstimatedTimeLeft,
+                                                 estimatedTimeLeftSeconds, globalStats),
+             [this](const ActivityResult&) { handleBookStatsReturn(); });
+@@ -3568,7 +3570,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction
+       startActivityForResult(
+           std::make_unique<ConfirmationActivity>(renderer, mappedInput,
+                                                  confirmationHeading(StrId::STR_DELETE_BOOKMARKS),
+-                                                 epub ? epub->getTitle() : std::string{}),
++                                                 epub ? bookDisplayTitle : std::string{}),
+           [this](const ActivityResult& result) {
+             if (!result.isCancelled) {
+               BOOKMARKS.clearAll();
+@@ -6174,7 +6176,7 @@ void EpubReaderActivity::renderStatusBar() const {
+     }
+ 
+   } else if (SETTINGS.statusBarTitle == CrossPointSettings::STATUS_BAR_TITLE::BOOK_TITLE) {
+-    title = epub->getTitle();
++    title = bookDisplayTitle;
+   }
+ 
+   const int bookmarkPageCount = estimatedPageCount > 0 ? estimatedPageCount : 1;
+@@ -6559,7 +6561,7 @@ ScreenshotInfo EpubReaderActivity::getScreenshotInfo() const {
+   ScreenshotInfo info;
+   info.readerType = ScreenshotInfo::ReaderType::Epub;
+   if (epub) {
+-    snprintf(info.title, sizeof(info.title), "%s", epub->getTitle().c_str());
++    snprintf(info.title, sizeof(info.title), "%s", bookDisplayTitle.c_str());
+     info.spineIndex = currentSpineIndex;
+   }
+   if (section) {
+diff --git a/src/activities/reader/EpubReaderActivity.h b/src/activities/reader/EpubReaderActivity.h
+index 87cc6fc..57046cc 100644
+--- a/src/activities/reader/EpubReaderActivity.h
++++ b/src/activities/reader/EpubReaderActivity.h
+@@ -92,6 +92,7 @@ class EpubReaderActivity final : public Activity {
+   };
+ 
+   std::shared_ptr<Epub> epub;
++  std::string bookDisplayTitle;
+   ActiveBookReaderSettingsData initialBookReaderSettings;
+   std::unique_ptr<Section> section = nullptr;
+   int currentSpineIndex = 0;
